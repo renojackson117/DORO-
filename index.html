@@ -18,7 +18,30 @@ $('save').onclick=()=>canvas.toBlob(b=>b?download(b,'sprite_sheet_2750x3500.png'
 const U16=(v,p)=>v.getUint16(p,false),U32=(v,p)=>v.getUint32(p,false),S16=(v,p)=>v.getInt16(p,false),S32=(v,p)=>v.getInt32(p,false);
 function be16(n){return new Uint8Array([(n>>>8)&255,n&255])}function be32(n){return new Uint8Array([(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255])}
 function join(parts){let n=parts.reduce((s,p)=>s+p.length,0),out=new Uint8Array(n),i=0;for(let p of parts){out.set(p,i);i+=p.length}return out}
-function packRow(row){let out=[];for(let i=0;i<row.length;){let run=1;while(i+run<row.length&&run<128&&row[i+run]===row[i])run++;if(run>=3){out.push(257-run,row[i]);i+=run;continue}let start=i;i+=run;while(i<row.length&&i-start<128){let r=1;while(i+r<row.length&&r<128&&row[i+r]===row[i])r++;if(r>=3)break;i+=r}out.push(i-start-1);for(let j=start;j<i;j++)out.push(row[j])}return Uint8Array.from(out)}
+function packRow(row){
+  const out=[];let i=0;
+  while(i<row.length){
+    let run=1;
+    while(i+run<row.length&&run<128&&row[i+run]===row[i])run++;
+    if(run>=3){out.push(257-run,row[i]);i+=run;continue;}
+    const start=i;i+=run;
+    while(i<row.length){
+      if(i-start>=128)break;
+      let r=1;
+      while(i+r<row.length&&r<128&&row[i+r]===row[i])r++;
+      if(r>=3)break;
+      if(i-start+r>128)break;
+      i+=r;
+    }
+    // A two-pixel run may straddle the 128-byte literal boundary.
+    // In that case emit the remaining byte(s) on the next iteration.
+    const length=Math.min(i-start,128);
+    out.push(length-1);
+    for(let j=start;j<start+length;j++)out.push(row[j]);
+    if(i>start+length)i=start+length;
+  }
+  return Uint8Array.from(out);
+}
 async function channelsFromCanvas(){let pix=ctx.getImageData(0,0,2750,3500).data,chs=[];for(let ch of [3,0,1,2]){let lens=new Uint8Array(3500*2),rows=[];for(let y=0;y<3500;y++){let row=new Uint8Array(2750),p=y*2750*4+ch;for(let x=0;x<2750;x++,p+=4)row[x]=pix[p];let enc=packRow(row);if(enc.length>65535)throw Error('PSD 압축 행 길이 초과');lens[y*2]=enc.length>>8;lens[y*2+1]=enc.length&255;rows.push(enc)}chs.push(join([be16(1),lens,...rows]));await new Promise(r=>setTimeout(r,0))}return chs}
 function replaceLayer(psd,target,newCh){let v=new DataView(psd.buffer,psd.byteOffset,psd.byteLength),p=0;if(String.fromCharCode(...psd.slice(0,4))!=='8BPS'||U16(v,4)!==1)throw Error('지원하지 않는 PSD입니다.');p=26;for(let k=0;k<2;k++){let len=U32(v,p);p+=4+len}let maskStart=p,maskLen=U32(v,p);p+=4;let infoStart=p,infoLen=U32(v,p);p+=4;let count=Math.abs(S16(v,p));p+=2;let records=[],found=-1;
 for(let i=0;i<count;i++){let recStart=p;let top=S32(v,p),left=S32(v,p+4),bottom=S32(v,p+8),right=S32(v,p+12);p+=16;let nc=U16(v,p);p+=2,channels=[];for(let c=0;c<nc;c++){channels.push({id:S16(v,p),len:U32(v,p+2),lenOffset:p+2});p+=6}p+=12;let extraLen=U32(v,p);p+=4;let extraEnd=p+extraLen;let m=U32(v,p);p+=4+m;let b=U32(v,p);p+=4+b;let nameLen=psd[p];let name=new TextDecoder('latin1').decode(psd.slice(p+1,p+1+nameLen));p+=Math.ceil((nameLen+1)/4)*4;let unicode='';while(p+12<=extraEnd){let key=String.fromCharCode(...psd.slice(p+4,p+8)),len=U32(v,p+8);p+=12;if(key==='luni'&&len>=4){let n=U32(v,p),s=[];for(let j=0;j<n;j++)s.push(String.fromCharCode(U16(v,p+4+j*2)));unicode=s.join('')}p+=len+(len%2)}p=extraEnd;let record=psd.slice(recStart,p);records.push({record,channels,top,left,bottom,right,name:unicode||name});if((unicode||name)===target)found=i}
